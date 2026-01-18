@@ -1,0 +1,9 @@
+[test]
+# Test configuration
+preload = ["./tests/utils/helpers.ts"]
+coverage = true
+coverageDir = "coverage"
+coverageReporter = ["lcov", "text"]
+
+# Thresholds (optional)
+# coverageThreshold = { line = 70, function = 70, statement = 70 }

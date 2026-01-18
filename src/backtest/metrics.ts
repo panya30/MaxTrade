@@ -18,7 +18,7 @@ export function calculateMetrics(
   initialCapital: number,
   riskFreeRate = 0.02
 ): PerformanceMetrics {
-  if (equityCurve.length === 0) {
+  if (equityCurve.length === 0 || initialCapital <= 0) {
     return createEmptyMetrics();
   }
 
@@ -27,17 +27,34 @@ export function calculateMetrics(
   const endDate = equityCurve[equityCurve.length - 1].date;
   const tradingDays = equityCurve.length;
 
+  // Validate final value
+  if (!isValidNumber(finalValue) || finalValue <= 0) {
+    return createEmptyMetrics();
+  }
+
   // Returns
   const totalReturn = finalValue - initialCapital;
-  const totalReturnPercent = (totalReturn / initialCapital) * 100;
+  const totalReturnPercent = safeDivide(totalReturn, initialCapital, 0) * 100;
 
   const years = tradingDays / 252;
-  const cagr = years > 0 ? (Math.pow(finalValue / initialCapital, 1 / years) - 1) * 100 : 0;
+  let cagr = 0;
+  if (years > 0 && finalValue > 0 && initialCapital > 0) {
+    const ratio = finalValue / initialCapital;
+    if (ratio > 0) {
+      cagr = (Math.pow(ratio, 1 / years) - 1) * 100;
+      if (!isValidNumber(cagr)) cagr = 0;
+    }
+  }
 
-  // Daily returns for volatility calculation
-  const dailyReturns = equityCurve
-    .slice(1)
-    .map((point, i) => (point.equity - equityCurve[i].equity) / equityCurve[i].equity);
+  // Daily returns for volatility calculation - filter out invalid equity values
+  const dailyReturns: number[] = [];
+  for (let i = 1; i < equityCurve.length; i++) {
+    const prevEquity = equityCurve[i - 1].equity;
+    const currEquity = equityCurve[i].equity;
+    if (isValidNumber(prevEquity) && isValidNumber(currEquity) && prevEquity > 0) {
+      dailyReturns.push((currEquity - prevEquity) / prevEquity);
+    }
+  }
 
   const volatility = calculateVolatility(dailyReturns) * 100;
 
@@ -48,20 +65,20 @@ export function calculateMetrics(
   // Drawdown analysis
   const { maxDrawdown, maxDrawdownDuration, avgDrawdown } = calculateDrawdownMetrics(equityCurve);
 
-  const calmarRatio = maxDrawdown !== 0 ? cagr / maxDrawdown : 0;
+  const calmarRatio = maxDrawdown > 0 ? safeDivide(cagr, maxDrawdown, 0) : 0;
 
   // Trade statistics
   const tradeStats = calculateTradeStats(trades);
 
   return {
-    totalReturn,
-    totalReturnPercent,
+    totalReturn: isValidNumber(totalReturn) ? totalReturn : 0,
+    totalReturnPercent: isValidNumber(totalReturnPercent) ? totalReturnPercent : 0,
     annualizedReturn: cagr,
     cagr,
-    volatility,
+    volatility: isValidNumber(volatility) ? volatility : 0,
     sharpeRatio,
     sortinoRatio,
-    calmarRatio,
+    calmarRatio: isValidNumber(calmarRatio) ? calmarRatio : 0,
     maxDrawdown,
     maxDrawdownDuration,
     avgDrawdown,
@@ -69,56 +86,95 @@ export function calculateMetrics(
     tradingDays,
     startDate,
     endDate,
-    finalValue,
+    finalValue: isValidNumber(finalValue) ? finalValue : 0,
   };
+}
+
+/** Safely check if a number is valid (not NaN, not Infinity) */
+function isValidNumber(n: number): boolean {
+  return typeof n === 'number' && !isNaN(n) && isFinite(n);
+}
+
+/** Safely divide two numbers, returning 0 on invalid input */
+function safeDivide(numerator: number, denominator: number, fallback = 0): number {
+  if (!isValidNumber(numerator) || !isValidNumber(denominator) || denominator === 0) {
+    return fallback;
+  }
+  const result = numerator / denominator;
+  return isValidNumber(result) ? result : fallback;
 }
 
 /** Calculate annualized volatility from daily returns */
 function calculateVolatility(dailyReturns: number[]): number {
   if (dailyReturns.length < 2) return 0;
 
-  const mean = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
-  const squaredDiffs = dailyReturns.map((r) => Math.pow(r - mean, 2));
-  const variance = squaredDiffs.reduce((a, b) => a + b, 0) / (dailyReturns.length - 1);
+  // Filter out any NaN or invalid values
+  const validReturns = dailyReturns.filter(isValidNumber);
+  if (validReturns.length < 2) return 0;
 
-  return Math.sqrt(variance * 252); // Annualize
+  const mean = validReturns.reduce((a, b) => a + b, 0) / validReturns.length;
+  const squaredDiffs = validReturns.map((r) => Math.pow(r - mean, 2));
+  const variance = squaredDiffs.reduce((a, b) => a + b, 0) / (validReturns.length - 1);
+
+  if (!isValidNumber(variance) || variance < 0) return 0;
+
+  const result = Math.sqrt(variance * 252); // Annualize
+  return isValidNumber(result) ? result : 0;
 }
 
 /** Calculate Sharpe Ratio */
 function calculateSharpeRatio(dailyReturns: number[], annualRiskFreeRate: number): number {
   if (dailyReturns.length < 2) return 0;
 
+  // Filter out invalid values first
+  const validReturns = dailyReturns.filter(isValidNumber);
+  if (validReturns.length < 2) return 0;
+
   const dailyRiskFree = annualRiskFreeRate / 252;
-  const excessReturns = dailyReturns.map((r) => r - dailyRiskFree);
+  const excessReturns = validReturns.map((r) => r - dailyRiskFree);
 
   const avgExcessReturn = excessReturns.reduce((a, b) => a + b, 0) / excessReturns.length;
   const volatility = calculateVolatility(excessReturns);
 
-  if (volatility === 0) return 0;
+  // Return 0 if volatility is 0 or very small (to avoid extreme values)
+  if (volatility === 0 || volatility < 1e-10) return 0;
 
-  return (avgExcessReturn * 252) / volatility;
+  const result = safeDivide(avgExcessReturn * 252, volatility, 0);
+
+  // Clamp to reasonable bounds (-100 to 100 Sharpe is already extreme)
+  return Math.max(-100, Math.min(100, result));
 }
 
 /** Calculate Sortino Ratio */
 function calculateSortinoRatio(dailyReturns: number[], annualRiskFreeRate: number): number {
   if (dailyReturns.length < 2) return 0;
 
+  // Filter out invalid values first
+  const validReturns = dailyReturns.filter(isValidNumber);
+  if (validReturns.length < 2) return 0;
+
   const dailyRiskFree = annualRiskFreeRate / 252;
-  const excessReturns = dailyReturns.map((r) => r - dailyRiskFree);
+  const excessReturns = validReturns.map((r) => r - dailyRiskFree);
 
   const avgExcessReturn = excessReturns.reduce((a, b) => a + b, 0) / excessReturns.length;
 
   // Downside deviation
   const negativeReturns = excessReturns.filter((r) => r < 0);
-  if (negativeReturns.length < 2) return avgExcessReturn > 0 ? Infinity : 0;
+  if (negativeReturns.length < 2) return avgExcessReturn > 0 ? 100 : 0; // Cap at 100 instead of Infinity
 
   const downsideSquared = negativeReturns.map((r) => r * r);
   const downsideVariance = downsideSquared.reduce((a, b) => a + b, 0) / negativeReturns.length;
+
+  if (!isValidNumber(downsideVariance) || downsideVariance < 0) return 0;
+
   const downsideDeviation = Math.sqrt(downsideVariance * 252);
 
-  if (downsideDeviation === 0) return 0;
+  if (downsideDeviation === 0 || downsideDeviation < 1e-10) return 0;
 
-  return (avgExcessReturn * 252) / downsideDeviation;
+  const result = safeDivide(avgExcessReturn * 252, downsideDeviation, 0);
+
+  // Clamp to reasonable bounds
+  return Math.max(-100, Math.min(100, result));
 }
 
 /** Calculate drawdown metrics */
@@ -135,7 +191,7 @@ function calculateDrawdownMetrics(equityCurve: EquityPoint[]): {
   let maxDrawdown = 0;
   let currentDrawdownStart = 0;
   let maxDrawdownDuration = 0;
-  let drawdowns: number[] = [];
+  const drawdowns: number[] = [];
 
   for (let i = 0; i < equityCurve.length; i++) {
     const equity = equityCurve[i].equity;
@@ -164,15 +220,11 @@ function calculateDrawdownMetrics(equityCurve: EquityPoint[]): {
 
   // Check final drawdown duration
   if (currentDrawdownStart > 0) {
-    maxDrawdownDuration = Math.max(
-      maxDrawdownDuration,
-      equityCurve.length - currentDrawdownStart
-    );
+    maxDrawdownDuration = Math.max(maxDrawdownDuration, equityCurve.length - currentDrawdownStart);
   }
 
-  const avgDrawdown = drawdowns.length > 0
-    ? drawdowns.reduce((a, b) => a + b, 0) / drawdowns.length
-    : 0;
+  const avgDrawdown =
+    drawdowns.length > 0 ? drawdowns.reduce((a, b) => a + b, 0) / drawdowns.length : 0;
 
   return { maxDrawdown, maxDrawdownDuration, avgDrawdown };
 }
@@ -219,16 +271,14 @@ function calculateTradeStats(trades: Trade[]): {
   const avgWin = winningTrades.length > 0 ? totalWin / winningTrades.length : 0;
   const avgLoss = losingTrades.length > 0 ? totalLoss / losingTrades.length : 0;
 
-  const largestWin = winningTrades.length > 0
-    ? Math.max(...winningTrades.map((t) => t.pnl!))
-    : 0;
-  const largestLoss = losingTrades.length > 0
-    ? Math.abs(Math.min(...losingTrades.map((t) => t.pnl!)))
-    : 0;
+  const largestWin = winningTrades.length > 0 ? Math.max(...winningTrades.map((t) => t.pnl!)) : 0;
+  const largestLoss =
+    losingTrades.length > 0 ? Math.abs(Math.min(...losingTrades.map((t) => t.pnl!))) : 0;
 
-  const avgHoldingPeriod = closedTrades
-    .filter((t) => t.holdingPeriodDays !== undefined)
-    .reduce((sum, t) => sum + t.holdingPeriodDays!, 0) / closedTrades.length || 0;
+  const avgHoldingPeriod =
+    closedTrades
+      .filter((t) => t.holdingPeriodDays !== undefined)
+      .reduce((sum, t) => sum + t.holdingPeriodDays!, 0) / closedTrades.length || 0;
 
   return {
     totalTrades: trades.length,
@@ -271,7 +321,7 @@ export function calculateBenchmarkComparison(
     .map((price, i) => (price - benchmark[i]) / benchmark[i]);
 
   // Benchmark metrics
-  const benchmarkReturn = ((benchmark[benchmark.length - 1] / benchmark[0]) - 1) * 100;
+  const benchmarkReturn = (benchmark[benchmark.length - 1] / benchmark[0] - 1) * 100;
   const benchmarkVolatility = calculateVolatility(benchmarkReturns) * 100;
   const benchmarkSharpe = calculateSharpeRatio(benchmarkReturns, riskFreeRate);
 
@@ -290,8 +340,10 @@ export function calculateBenchmarkComparison(
   const beta = calculateBeta(strategyReturns, benchmarkReturns);
 
   // Alpha (Jensen's Alpha)
-  const avgStrategyReturn = strategyReturns.reduce((a, b) => a + b, 0) / strategyReturns.length * 252;
-  const avgBenchmarkReturn = benchmarkReturns.reduce((a, b) => a + b, 0) / benchmarkReturns.length * 252;
+  const avgStrategyReturn =
+    (strategyReturns.reduce((a, b) => a + b, 0) / strategyReturns.length) * 252;
+  const avgBenchmarkReturn =
+    (benchmarkReturns.reduce((a, b) => a + b, 0) / benchmarkReturns.length) * 252;
   const alpha = avgStrategyReturn - (riskFreeRate + beta * (avgBenchmarkReturn - riskFreeRate));
 
   // Tracking error
@@ -299,11 +351,11 @@ export function calculateBenchmarkComparison(
   const trackingError = calculateVolatility(excessReturns) * 100;
 
   // Information ratio
-  const avgExcess = excessReturns.reduce((a, b) => a + b, 0) / excessReturns.length * 252 * 100;
+  const avgExcess = (excessReturns.reduce((a, b) => a + b, 0) / excessReturns.length) * 252 * 100;
   const informationRatio = trackingError > 0 ? avgExcess / trackingError : 0;
 
   // Excess return
-  const strategyReturn = ((equity[equity.length - 1].equity / equity[0].equity) - 1) * 100;
+  const strategyReturn = (equity[equity.length - 1].equity / equity[0].equity - 1) * 100;
   const excessReturn = strategyReturn - benchmarkReturn;
 
   return {
@@ -387,7 +439,7 @@ export function calculateMonthlyReturns(equityCurve: EquityPoint[]): MonthlyRetu
 
   for (const [key, data] of monthlyData) {
     const [year, month] = key.split('-').map(Number);
-    const ret = ((data.end / data.start) - 1) * 100;
+    const ret = (data.end / data.start - 1) * 100;
     monthlyReturns.push({ year, month, return: ret });
   }
 

@@ -9,16 +9,12 @@ import type {
   BacktestData,
   EquityPoint,
   PriceBar,
-  Trade,
-  Position,
+  CommissionConfig,
+  SlippageConfig,
 } from './types';
 import type { Signal, StrategyResult } from '../strategies/types';
 import { Portfolio, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './portfolio';
-import {
-  calculateMetrics,
-  calculateBenchmarkComparison,
-  calculateMonthlyReturns,
-} from './metrics';
+import { calculateMetrics, calculateBenchmarkComparison, calculateMonthlyReturns } from './metrics';
 
 /** Default backtest configuration */
 export const DEFAULT_CONFIG: BacktestConfig = {
@@ -39,14 +35,66 @@ export class BacktestEngine {
   private equityCurve: EquityPoint[] = [];
   private benchmarkPrices: number[] = [];
 
-  constructor(config: Partial<BacktestConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  constructor(
+    config: Partial<BacktestConfig> & {
+      commission?: number | CommissionConfig;
+      slippage?: number | SlippageConfig;
+    } = {}
+  ) {
+    // Normalize commission - convert number to CommissionConfig
+    const commission = this.normalizeCommissionConfig(config.commission);
+    // Normalize slippage - convert number to SlippageConfig
+    const slippage = this.normalizeSlippageConfig(config.slippage);
+
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+      commission,
+      slippage,
+    };
     this.portfolio = new Portfolio(
       this.config.initialCapital,
       this.config.commission,
       this.config.slippage,
       this.config.allowFractional
     );
+  }
+
+  /**
+   * Normalize commission config - handles both number and object formats
+   */
+  private normalizeCommissionConfig(
+    config: number | CommissionConfig | undefined
+  ): CommissionConfig {
+    if (config === undefined) {
+      return DEFAULT_COMMISSION;
+    }
+    if (typeof config === 'number') {
+      return {
+        fixedFee: 0,
+        percentFee: config,
+        minCommission: 0,
+        maxCommission: Infinity,
+      };
+    }
+    return config;
+  }
+
+  /**
+   * Normalize slippage config - handles both number and object formats
+   */
+  private normalizeSlippageConfig(config: number | SlippageConfig | undefined): SlippageConfig {
+    if (config === undefined) {
+      return DEFAULT_SLIPPAGE;
+    }
+    if (typeof config === 'number') {
+      return {
+        fixed: 0,
+        percent: config,
+        randomize: false,
+      };
+    }
+    return config;
   }
 
   /**
@@ -63,9 +111,7 @@ export class BacktestEngine {
 
     // Get all unique dates
     const allDates = this.getUniqueDates(data.prices);
-    const tradingDates = allDates.filter(
-      (d) => d >= data.startDate && d <= data.endDate
-    );
+    const tradingDates = allDates.filter((d) => d >= data.startDate && d <= data.endDate);
 
     if (tradingDates.length === 0) {
       return this.createEmptyResult();
@@ -101,10 +147,7 @@ export class BacktestEngine {
         ((equity - this.config.initialCapital) / this.config.initialCapital) * 100;
 
       // Calculate drawdown
-      const peak = Math.max(
-        this.config.initialCapital,
-        ...this.equityCurve.map((p) => p.equity)
-      );
+      const peak = Math.max(this.config.initialCapital, ...this.equityCurve.map((p) => p.equity));
       const drawdown = ((peak - equity) / peak) * 100;
 
       this.equityCurve.push({
@@ -183,18 +226,15 @@ export class BacktestEngine {
       strength: typeof s.strength === 'number' ? s.strength : confidence,
       factors: Array.isArray(s.factors) ? s.factors : [],
       timestamp: typeof s.timestamp === 'number' ? s.timestamp : Date.now(),
-      metadata: typeof s.metadata === 'object' ? (s.metadata as Record<string, unknown>) : undefined,
+      metadata:
+        typeof s.metadata === 'object' ? (s.metadata as Record<string, unknown>) : undefined,
     };
   }
 
   /**
    * Execute signals
    */
-  private executeSignals(
-    signals: Signal[],
-    prices: Map<string, number>,
-    date: number
-  ): void {
+  private executeSignals(signals: Signal[], prices: Map<string, number>, date: number): void {
     // Normalize all signals to handle various input formats
     const normalizedSignals = signals.map((s) => this.normalizeSignal(s));
 
@@ -229,11 +269,7 @@ export class BacktestEngine {
       if (existingPosition) continue;
 
       // Calculate position size
-      const quantity = this.calculatePositionSize(
-        signal,
-        price,
-        signalsToExecute.length
-      );
+      const quantity = this.calculatePositionSize(signal, price, signalsToExecute.length);
 
       if (quantity > 0) {
         this.portfolio.buy(signal.symbol, quantity, price, date);
@@ -244,11 +280,7 @@ export class BacktestEngine {
   /**
    * Calculate position size based on config
    */
-  private calculatePositionSize(
-    signal: Signal,
-    price: number,
-    totalSignals: number
-  ): number {
+  private calculatePositionSize(signal: Signal, price: number, totalSignals: number): number {
     const portfolioValue = this.portfolio.getTotalValue();
     const cash = this.portfolio.getCash();
     let targetValue: number;
@@ -267,11 +299,12 @@ export class BacktestEngine {
         targetValue = cash / Math.max(1, totalSignals);
         break;
 
-      case 'kelly':
+      case 'kelly': {
         // Simplified Kelly: use confidence as win probability
         const kellyFraction = signal.confidence - (1 - signal.confidence);
         targetValue = portfolioValue * Math.max(0, kellyFraction * 0.25); // Quarter Kelly
         break;
+      }
 
       default:
         targetValue = portfolioValue * 0.05;
@@ -304,22 +337,25 @@ export class BacktestEngine {
       case 'daily':
         return true;
 
-      case 'weekly':
+      case 'weekly': {
         // Check if week changed
         const prevWeek = this.getWeekNumber(dates[dayIndex - 1]);
         const currWeek = this.getWeekNumber(dates[dayIndex]);
         return prevWeek !== currWeek;
+      }
 
-      case 'monthly':
+      case 'monthly': {
         // Check if month changed
         const prevMonth = new Date(dates[dayIndex - 1]).getMonth();
         const currMonth = new Date(dates[dayIndex]).getMonth();
         return prevMonth !== currMonth;
+      }
 
-      case 'quarterly':
+      case 'quarterly': {
         const prevQuarter = Math.floor(new Date(dates[dayIndex - 1]).getMonth() / 3);
         const currQuarter = Math.floor(new Date(dates[dayIndex]).getMonth() / 3);
         return prevQuarter !== currQuarter;
+      }
 
       case 'never':
         return dayIndex === 0;
@@ -357,10 +393,7 @@ export class BacktestEngine {
   /**
    * Get closing prices for a specific date
    */
-  private getPricesForDate(
-    prices: Map<string, PriceBar[]>,
-    date: number
-  ): Map<string, number> {
+  private getPricesForDate(prices: Map<string, PriceBar[]>, date: number): Map<string, number> {
     const result = new Map<string, number>();
 
     for (const [symbol, bars] of prices) {
@@ -404,13 +437,14 @@ export class BacktestEngine {
       this.config.riskFreeRate
     );
 
-    const benchmark = this.benchmarkPrices.length > 0
-      ? calculateBenchmarkComparison(
-          this.equityCurve,
-          this.benchmarkPrices,
-          this.config.riskFreeRate
-        )
-      : undefined;
+    const benchmark =
+      this.benchmarkPrices.length > 0
+        ? calculateBenchmarkComparison(
+            this.equityCurve,
+            this.benchmarkPrices,
+            this.config.riskFreeRate
+          )
+        : undefined;
 
     const monthlyReturns = calculateMonthlyReturns(this.equityCurve);
 
@@ -461,8 +495,6 @@ export class BacktestEngine {
 }
 
 /** Create a new backtest engine */
-export function createBacktestEngine(
-  config: Partial<BacktestConfig> = {}
-): BacktestEngine {
+export function createBacktestEngine(config: Partial<BacktestConfig> = {}): BacktestEngine {
   return new BacktestEngine(config);
 }

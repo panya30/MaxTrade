@@ -7,14 +7,35 @@
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir dist",
     "test": "bun test",
-    "lint": "eslint src/",
-    "typecheck": "tsc --noEmit"
+    "test:ci": "bun test --coverage --coverage-dir=coverage",
+    "test:watch": "bun test --watch",
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
   },
   "dependencies": {
-    "hono": "^4.0.0"
+    "@hono/zod-validator": "^0.7.6",
+    "hono": "^4.11.4",
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.0.0"
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.53.0"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ]
   }
 }

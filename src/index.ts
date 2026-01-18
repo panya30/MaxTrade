@@ -4,14 +4,13 @@
  * Entry point
  */
 
-console.log("🚀 MaxTrade starting...");
+import { startServer } from './web/server';
 
-// TODO: Initialize components
-// - Data fetchers
-// - Factor calculator
-// - Strategy registry
-// - Backtest engine
-// - AI integration
-// - Web server
+console.log('🚀 MaxTrade starting...');
 
-export {};
+// Start the API server
+startServer({
+  port: parseInt(process.env.PORT ?? '3002', 10),
+  logging: process.env.NODE_ENV !== 'test',
+  corsOrigins: ['http://localhost:5173', 'http://localhost:3000', '*'],
+});

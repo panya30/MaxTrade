@@ -29,7 +29,7 @@ export const DEFAULT_CONFIG: BacktestConfig = {
   maxPositions: 20,
   maxPositionPercent: 10,
   rebalanceFrequency: 'daily',
-  allowFractional: false,
+  allowFractional: true, // Enable by default for crypto/fractional share support
   riskFreeRate: 0.02,
 };
 
@@ -152,6 +152,42 @@ export class BacktestEngine {
   }
 
   /**
+   * Normalize a signal to ensure it has the expected properties
+   * Supports both action/direction and confidence/strength formats
+   */
+  private normalizeSignal(signal: Signal | Record<string, unknown>): Signal {
+    const s = signal as Record<string, unknown>;
+
+    // Normalize action: support both 'action' and 'direction' properties
+    let action: 'buy' | 'sell' | 'hold' = 'hold';
+    if (s.action === 'buy' || s.action === 'sell' || s.action === 'hold') {
+      action = s.action;
+    } else if (s.direction === 'long' || s.direction === 'buy') {
+      action = 'buy';
+    } else if (s.direction === 'short' || s.direction === 'sell') {
+      action = 'sell';
+    }
+
+    // Normalize confidence: support both 'confidence' and 'strength'
+    const confidence =
+      typeof s.confidence === 'number'
+        ? s.confidence
+        : typeof s.strength === 'number'
+          ? s.strength
+          : 0.5;
+
+    return {
+      symbol: String(s.symbol ?? ''),
+      action,
+      confidence,
+      strength: typeof s.strength === 'number' ? s.strength : confidence,
+      factors: Array.isArray(s.factors) ? s.factors : [],
+      timestamp: typeof s.timestamp === 'number' ? s.timestamp : Date.now(),
+      metadata: typeof s.metadata === 'object' ? (s.metadata as Record<string, unknown>) : undefined,
+    };
+  }
+
+  /**
    * Execute signals
    */
   private executeSignals(
@@ -159,8 +195,11 @@ export class BacktestEngine {
     prices: Map<string, number>,
     date: number
   ): void {
+    // Normalize all signals to handle various input formats
+    const normalizedSignals = signals.map((s) => this.normalizeSignal(s));
+
     // Sort by confidence (highest first)
-    const sortedSignals = [...signals].sort((a, b) => b.confidence - a.confidence);
+    const sortedSignals = [...normalizedSignals].sort((a, b) => b.confidence - a.confidence);
 
     // Process sell signals first
     const sellSignals = sortedSignals.filter((s) => s.action === 'sell');
@@ -186,7 +225,8 @@ export class BacktestEngine {
       if (!price) continue;
 
       // Check if we already have this position
-      if (this.portfolio.getPosition(signal.symbol)) continue;
+      const existingPosition = this.portfolio.getPosition(signal.symbol);
+      if (existingPosition) continue;
 
       // Calculate position size
       const quantity = this.calculatePositionSize(
@@ -241,7 +281,17 @@ export class BacktestEngine {
     const maxValue = portfolioValue * (this.config.maxPositionPercent / 100);
     targetValue = Math.min(targetValue, maxValue, cash);
 
-    return targetValue / price;
+    let quantity = targetValue / price;
+
+    // If not allowing fractional and quantity < 1, try to buy 1 whole unit
+    // if affordable (useful for expensive assets like BTC)
+    if (!this.config.allowFractional && quantity < 1 && quantity > 0) {
+      if (price <= cash) {
+        quantity = 1;
+      }
+    }
+
+    return quantity;
   }
 
   /**
